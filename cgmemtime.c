@@ -27,6 +27,8 @@ struct Options {
   char group[32];
   char perm[5];
 
+  char memory_limit[14];
+
   char cgfs_base[128];
   char cgfs_top[128];
   char sub_group[512];
@@ -55,7 +57,9 @@ static void init_options(Options *opts)
     .perm = "755",
 
     .cgfs_base = "/sys/fs/cgroup",
-    .cgfs_top = "memory/cgmemtime"
+    .cgfs_top = "memory/cgmemtime",
+
+    .memory_limit = "1099511627776" // 1 TB
   };
 }
 
@@ -64,7 +68,7 @@ static int parse_options(int argc, char **argv, Options *opts)
   init_options(opts);
 
   int i = 1;
-  enum Base { NONE, BASE, ROOT, USER, GROUP, PERM};
+  enum Base { NONE, BASE, ROOT, USER, GROUP, PERM, MEMORY_LIMIT};
   enum Base next = NONE;
   for (; i<argc; ++i) {
     const char *o = argv[i];
@@ -84,6 +88,9 @@ static int parse_options(int argc, char **argv, Options *opts)
           break;
         case PERM:
           strncpy(opts->perm, o, 4);
+          break;
+        case MEMORY_LIMIT:
+          strncpy(opts->memory_limit, o, 13);
           break;
         default:
           break;
@@ -109,6 +116,8 @@ static int parse_options(int argc, char **argv, Options *opts)
       next = PERM;
     } else if (!strcmp(o, "--force-empty")) {
       opts->force_empty = true;
+    } else if (!strcmp(o, "--memory-limit")) {
+      next = MEMORY_LIMIT;
     } else {
       break;
     }
@@ -144,6 +153,7 @@ static void help(const char *prog)
       "\t\te.g. /sys/fs/cgroup/memory/cgmemtime has to be writable\n"
       "\t--force-empty\t'call' force-empty before rmdir\n"
       "\t\t (e.g. forces cleanup of cached pages)\n"
+      "\t--memory-limit BYTES\tset memory limit to a child process\n"
       "\n"
       "\t--setup\tsetup mode (create sysfs hierachy under BASE)\n"
       "\t-u, --user STR\tuser name (default: root)\n"
@@ -196,26 +206,6 @@ static int verify_max_zero(const Options *opts)
   return 0;
 }
 
-static int setup_cg(Options *opts)
-{
-  char pid_str[22] = {0};
-  snprintf(pid_str, 22, "%zd", (ssize_t)getpid());
-  char sub_group[512] = {0};
-  snprintf(sub_group, 512, "%s/%s/%s",
-      opts->cgfs_base, opts->cgfs_top, pid_str);
-  int ret = mkdir(sub_group, 0755);
-  if (ret == -1) {
-    fprintf(stderr, "Could not create new sub-cgroup %s: ", sub_group);
-    perror(0);
-    return -1;
-  }
-  strncpy(opts->sub_group, sub_group, 511);
-  ret = verify_max_zero(opts);
-  if (ret)
-    return -1;
-  return 0;
-}
-
 static int echo(const char *out, const char *file)
 {
   if (!out)
@@ -245,6 +235,33 @@ static int echo(const char *out, const char *file)
     perror(0);
     return -4;
   }
+  return 0;
+}
+
+static int setup_cg(Options *opts)
+{
+  char pid_str[22] = {0};
+  snprintf(pid_str, 22, "%zd", (ssize_t)getpid());
+  char hostname[256] = {0};
+  gethostname(hostname, 255);
+  char sub_group[512] = {0};
+  snprintf(sub_group, 512, "%s/%s/%s_%s",
+      opts->cgfs_base, opts->cgfs_top, hostname, pid_str);
+  int ret = mkdir(sub_group, 0755);
+  if (ret == -1) {
+    fprintf(stderr, "Could not create new sub-cgroup %s: ", sub_group);
+    perror(0);
+    return -1;
+  }
+  strncpy(opts->sub_group, sub_group, 511);
+  ret = verify_max_zero(opts);
+  if (ret)
+    return -1;
+  char file[256] = {0};
+  snprintf(file, 256, "%s/memory.limit_in_bytes", opts->sub_group);
+  ret = echo(opts->memory_limit, file);
+  if (ret)
+    return -1;
   return 0;
 }
 
