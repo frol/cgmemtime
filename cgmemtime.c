@@ -1,3 +1,4 @@
+
 // 2012, Georg Sauthoff <mail@georg.so>
 // GPLv3+
 
@@ -16,11 +17,13 @@
 #include <unistd.h>
 #include <grp.h>
 #include <pwd.h>
+#include <signal.h>
 
 struct Options {
   bool help;
   bool machine_readable;
   bool force_empty;
+  bool kill_children_on_exit;
 
   bool setup_mode;
   char user[32];
@@ -116,6 +119,8 @@ static int parse_options(int argc, char **argv, Options *opts)
       next = PERM;
     } else if (!strcmp(o, "--force-empty")) {
       opts->force_empty = true;
+    } else if (!strcmp(o, "--kill-children-on-exit")) {
+      opts->kill_children_on_exit = true;
     } else if (!strcmp(o, "--memory-limit")) {
       next = MEMORY_LIMIT;
     } else {
@@ -452,17 +457,37 @@ static void print(const Options *opts, const Output *output)
 
 static int verify_tasks_empty(const Options *opts)
 {
-  char out[1024] = {0};
-  char file[512] = {0};
-  snprintf(file, 512, "%s/tasks", opts->sub_group);
-  int ret = cat(file, out, 1024);
-  if (ret)
-    return -1;
-  if (*out) {
-    fprintf(stderr,
-        "Child terminated but following descendants are still running: %s\n",
-        out);
-    return -2;
+  char filename[512] = {0};
+  snprintf(filename, 512, "%s/tasks", opts->sub_group);
+
+  if (opts->kill_children_on_exit) {
+      pid_t task_pid;
+      do
+      {
+          FILE* tasks_list_file = fopen(filename, "r");
+          task_pid = 0;
+          while (!feof(tasks_list_file))
+          {
+            fscanf(tasks_list_file, "%u", &task_pid);
+            if (task_pid != 0)
+            {
+                kill(task_pid, SIGKILL);
+            }
+          }
+          fclose(tasks_list_file);
+          usleep(100);
+      } while (task_pid != 0);
+  } else {
+      char out[1024] = {0};
+      int ret = cat(filename, out, 1024);
+      if (ret)
+        return -1;
+      if (*out) {
+        fprintf(stderr,
+            "Child terminated but following descendants are still running: %s\n",
+            out);
+        return -2;
+      }
   }
   return 0;
 }
