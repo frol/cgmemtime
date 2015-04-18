@@ -34,7 +34,8 @@ struct Options {
 
   char cgfs_base[128];
   char cgfs_top[128];
-  char sub_group[512];
+  char memory_sub_group[512];
+  char cpuacct_sub_group[512];
   int argc;
   char **argv;
 };
@@ -48,6 +49,7 @@ struct Output {
   size_t child_rss_highwater;
 
   size_t cg_rss_highwater;
+  size_t cg_cpuacct_usage_ns;
 };
 typedef struct Output Output;
 
@@ -60,7 +62,7 @@ static void init_options(Options *opts)
     .perm = "755",
 
     .cgfs_base = "/sys/fs/cgroup",
-    .cgfs_top = "memory/cgmemtime",
+    .cgfs_top = "cgmemtime",
 
     .memory_limit = "1099511627776" // 1 TB
   };
@@ -198,7 +200,7 @@ static int cat(const char *file, char *out, size_t len)
 static int verify_max_zero(const Options *opts)
 {
   char file[512] = {0};
-  snprintf(file, 512, "%s/memory.max_usage_in_bytes", opts->sub_group);
+  snprintf(file, 512, "%s/memory.max_usage_in_bytes", opts->memory_sub_group);
   char out[32] = {0};
   int ret = cat(file, out, 32);
   if (ret)
@@ -250,7 +252,8 @@ static int setup_cg(Options *opts)
   char hostname[256] = {0};
   gethostname(hostname, 255);
   char sub_group[512] = {0};
-  snprintf(sub_group, 512, "%s/%s/%s_%s",
+
+  snprintf(sub_group, 512, "%s/cpuacct/%s/%s_%s",
       opts->cgfs_base, opts->cgfs_top, hostname, pid_str);
   int ret = mkdir(sub_group, 0755);
   if (ret == -1) {
@@ -258,15 +261,32 @@ static int setup_cg(Options *opts)
     perror(0);
     return -1;
   }
-  strncpy(opts->sub_group, sub_group, 511);
+  strncpy(opts->cpuacct_sub_group, sub_group, 511);
+
+  snprintf(sub_group, 512, "%s/memory/%s/%s_%s",
+      opts->cgfs_base, opts->cgfs_top, hostname, pid_str);
+  ret = mkdir(sub_group, 0755);
+  if (ret == -1) {
+    fprintf(stderr, "Could not create new sub-cgroup %s: ", sub_group);
+    perror(0);
+    return -1;
+  }
+  strncpy(opts->memory_sub_group, sub_group, 511);
+
   ret = verify_max_zero(opts);
   if (ret)
     return -1;
   char file[256] = {0};
-  snprintf(file, 256, "%s/memory.limit_in_bytes", opts->sub_group);
+  snprintf(file, 256, "%s/memory.limit_in_bytes", opts->memory_sub_group);
   ret = echo(opts->memory_limit, file);
   if (ret)
     return -1;
+
+  snprintf(file, 256, "%s/cpuacct.usage", opts->cpuacct_sub_group);
+  ret = echo("0", file);
+  if (ret)
+    return -1;
+
   return 0;
 }
 
@@ -275,7 +295,7 @@ static int force_empty(const Options *opts)
   if (!opts->force_empty)
     return 0;
   char file[256] = {0};
-  snprintf(file, 256, "%s/memory.force_empty", opts->sub_group);
+  snprintf(file, 256, "%s/memory.force_empty", opts->memory_sub_group);
   int ret = echo("0", file);
   if (ret)
     return -1;
@@ -286,9 +306,15 @@ static int cleanup_cg(const Options *opts)
 {
   int ret_fe = force_empty(opts);
   int ret = 0;
-  ret = rmdir(opts->sub_group);
+  ret = rmdir(opts->memory_sub_group);
   if (ret == -1) {
-    fprintf(stderr, "Could not remove sub-cgroup %s: ", opts->sub_group);
+    fprintf(stderr, "Could not remove sub-cgroup %s: ", opts->memory_sub_group);
+    perror(0);
+    return -1;
+  }
+  ret = rmdir(opts->cpuacct_sub_group);
+  if (ret == -1) {
+    fprintf(stderr, "Could not remove sub-cgroup %s: ", opts->memory_sub_group);
     perror(0);
     return -1;
   }
@@ -312,24 +338,45 @@ static int run_child(const Options *opts)
 static int store_cg_rss_highwater(const Options *opts, Output *output)
 {
   char file[512] = {0};
-  snprintf(file, 512, "%s/memory.max_usage_in_bytes", opts->sub_group);
+  snprintf(file, 512, "%s/memory.max_usage_in_bytes", opts->memory_sub_group);
   char out[32] = {0};
   int ret = cat(file, out, 32);
   if (ret)
     return -1;
-  output->cg_rss_highwater = atoi(out);
+  sscanf(out, "%lu", &output->cg_rss_highwater);
+  return 0;
+}
+
+static int store_cg_cpuacct_usage(const Options *opts, Output *output)
+{
+  char file[512] = {0};
+  snprintf(file, 512, "%s/cpuacct.usage", opts->cpuacct_sub_group);
+  char out[32] = {0};
+  int ret = cat(file, out, 32);
+  if (ret)
+    return -1;
+  sscanf(out, "%lu", &output->cg_cpuacct_usage_ns);
   return 0;
 }
 
 static int add_pid_to_cg(const Options *opts, pid_t pid)
 {
-  char file[512] = {0};
-  snprintf(file, 512, "%s/tasks", opts->sub_group);
   char pid_str[32] = {0};
   snprintf(pid_str, 32, "%zd", (ssize_t)pid);
-  int ret = echo(pid_str, file);
+
+  char file[512] = {0};
+  int ret = 0;
+
+  snprintf(file, 512, "%s/tasks", opts->cpuacct_sub_group);
+  ret = echo(pid_str, file);
   if (ret)
     return -1;
+
+  snprintf(file, 512, "%s/tasks", opts->memory_sub_group);
+  ret = echo(pid_str, file);
+  if (ret)
+    return -1;
+
   return 0;
 }
 
@@ -381,6 +428,7 @@ static int execute(const Options *opts, Output *output)
     output->child_user = usg.ru_utime;
     output->child_sys = usg.ru_stime;
     store_cg_rss_highwater(opts, output);
+    store_cg_cpuacct_usage(opts, output);
     if (WIFEXITED(status))
       return WEXITSTATUS(status);
     if (WIFSIGNALED(status))
@@ -422,6 +470,10 @@ static int pretty_print(const Output *out)
   fprintf(stderr, "Child wall: ");
   print_timeval(stderr, &out->child_wall);
   fprintf(stderr, "\n");
+  fprintf(stderr, "Cgroup user:   %zu.%zu s\n",
+      out->cg_cpuacct_usage_ns / 1000000000,
+      (out->cg_cpuacct_usage_ns % 1000000000) / 1000000
+      );
   fprintf(stderr, "Child high-water RSS                    : %10zu KiB\n",
       out->child_rss_highwater/1024
       );
@@ -439,7 +491,8 @@ static int machine_print(const Output *out)
   fprintf(stderr, ";");
   print_timeval_m(stderr, &out->child_wall);
   fprintf(stderr, ";");
-  fprintf(stderr, "%zu;%zu",
+  fprintf(stderr, "%zu;%zu;%zu",
+      out->cg_cpuacct_usage_ns/1000000,
       out->child_rss_highwater/1024,
       out->cg_rss_highwater/1024
       );
@@ -458,7 +511,7 @@ static void print(const Options *opts, const Output *output)
 static int verify_tasks_empty(const Options *opts)
 {
   char filename[512] = {0};
-  snprintf(filename, 512, "%s/tasks", opts->sub_group);
+  snprintf(filename, 512, "%s/tasks", opts->memory_sub_group);
 
   if (opts->kill_children_on_exit) {
       pid_t task_pid;
@@ -546,7 +599,8 @@ static int setup_root(const Options *opts)
   if (ret)
     return -2;
   char name[512] = {0};
-  snprintf(name, 512, "%s/%s", opts->cgfs_base, opts->cgfs_top);
+
+  snprintf(name, 512, "%s/cpuacct/%s", opts->cgfs_base, opts->cgfs_top);
   ret = mkdir(name, perm);
   if (ret) {
     fprintf(stderr, "Could not mkdir %s: ", name);
@@ -567,6 +621,29 @@ static int setup_root(const Options *opts)
     perror(0);
     return -4;
   }
+
+  snprintf(name, 512, "%s/memory/%s", opts->cgfs_base, opts->cgfs_top);
+  ret = mkdir(name, perm);
+  if (ret) {
+    fprintf(stderr, "Could not mkdir %s: ", name);
+    perror(0);
+    return -3;
+  }
+  // mkdir honors umask ...
+  ret = chmod(name, perm);
+  if (ret) {
+    fprintf(stderr, "Could not chmod %o %s: ", perm, name);
+    perror(0);
+    return -5;
+  }
+  ret = chown(name, uid, gid);
+  if (ret) {
+    fprintf(stderr, "Could not chown %s (uid: %zd, gid: %zd): ",
+        name, (ssize_t)uid, (ssize_t)gid);
+    perror(0);
+    return -4;
+  }
+
   return 0;
 }
 
