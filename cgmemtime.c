@@ -470,9 +470,8 @@ static int pretty_print(const Output *out)
   fprintf(stderr, "Child wall: ");
   print_timeval(stderr, &out->child_wall);
   fprintf(stderr, "\n");
-  fprintf(stderr, "Cgroup user:   %zu.%zu s\n",
-      out->cg_cpuacct_usage_ns / 1000000000,
-      (out->cg_cpuacct_usage_ns % 1000000000) / 1000000
+  fprintf(stderr, "Cgroup user:   %zu ms\n",
+      out->cg_cpuacct_usage_ns / 1000000
       );
   fprintf(stderr, "Child high-water RSS                    : %10zu KiB\n",
       out->child_rss_highwater/1024
