@@ -31,6 +31,7 @@ struct Options {
   char perm[5];
 
   char memory_limit[14];
+  char kernel_memory_limit[14];
 
   char cgfs_base[128];
   char cgfs_top[128];
@@ -64,7 +65,8 @@ static void init_options(Options *opts)
     .cgfs_base = "/sys/fs/cgroup",
     .cgfs_top = "cgmemtime",
 
-    .memory_limit = "1099511627776" // 1 TB
+    .memory_limit = "1099511627776", // 1 TB
+    .kernel_memory_limit = "1099511627776" // 1 TB
   };
 }
 
@@ -73,7 +75,7 @@ static int parse_options(int argc, char **argv, Options *opts)
   init_options(opts);
 
   int i = 1;
-  enum Base { NONE, BASE, ROOT, USER, GROUP, PERM, MEMORY_LIMIT};
+  enum Base { NONE, BASE, ROOT, USER, GROUP, PERM, MEMORY_LIMIT, KERNEL_MEMORY_LIMIT};
   enum Base next = NONE;
   for (; i<argc; ++i) {
     const char *o = argv[i];
@@ -125,6 +127,8 @@ static int parse_options(int argc, char **argv, Options *opts)
       opts->kill_children_on_exit = true;
     } else if (!strcmp(o, "--memory-limit")) {
       next = MEMORY_LIMIT;
+    } else if (!strcmp(o, "--kernel-memory-limit")) {
+      next = KERNEL_MEMORY_LIMIT;
     } else {
       break;
     }
@@ -279,6 +283,11 @@ static int setup_cg(Options *opts)
   char file[256] = {0};
   snprintf(file, 256, "%s/memory.limit_in_bytes", opts->memory_sub_group);
   ret = echo(opts->memory_limit, file);
+  if (ret)
+    return -1;
+
+  snprintf(file, 256, "%s/memory.kmem.limit_in_bytes", opts->memory_sub_group);
+  ret = echo(opts->kernel_memory_limit, file);
   if (ret)
     return -1;
 
