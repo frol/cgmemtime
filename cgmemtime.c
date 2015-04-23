@@ -99,6 +99,9 @@ static int parse_options(int argc, char **argv, Options *opts)
         case MEMORY_LIMIT:
           strncpy(opts->memory_limit, o, 13);
           break;
+        case KERNEL_MEMORY_LIMIT:
+          strncpy(opts->kernel_memory_limit, o, 13);
+          break;
         default:
           break;
       }
