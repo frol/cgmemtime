@@ -65,8 +65,8 @@ static void init_options(Options *opts)
     .cgfs_base = "/sys/fs/cgroup",
     .cgfs_top = "cgmemtime",
 
-    .memory_limit = "1099511627776", // 1 TB
-    .kernel_memory_limit = "1099511627776" // 1 TB
+    .memory_limit = "-1",
+    .kernel_memory_limit = "-1"
   };
 }
 
